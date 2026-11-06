@@ -255,7 +255,7 @@ If you use this codebase, framework, or dataset in your research, please cite ou
 ### BibTeX
 
 ```bibtex
-@article{caviglione_semisupervised_fewshot,
+@article{10.1007/s10994-026-07190-z,
   title   = {A Semi-Supervised Few-Shot Framework for Detecting
              Stealth Malicious Network Traffic},
   author  = {Caviglione, Luca and Guarascio, Massimo and
