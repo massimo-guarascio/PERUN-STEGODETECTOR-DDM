@@ -1,0 +1,84 @@
+import torch
+import time
+import pickle
+import os
+import torch.nn as nn
+import pandas as pd
+from src.dataset.dataset_loader import load_dataset, get_dataloaders
+from src.support.arguments import parse_arguments
+from src.model.predictive_model_noise import ConcatenatedPredictiveVAE
+from src.support.utils import set_reproducibility, print_args
+from src.arn.model import Generator, Discriminator
+import json
+
+
+def main():
+    args = parse_arguments()
+    print_args(args)
+
+    x_train_unsupervised, x_train_few_shot, y_train_few_shot, x_test, y_test = load_dataset(args)
+    _, train_few_shot_loader, test_loader = get_dataloaders(x_train_unsupervised,
+                                                            x_train_few_shot, y_train_few_shot,
+                                                            x_test, y_test, args)
+
+    set_reproducibility(args.seed)
+    attack_type = args.attack_type
+    batch_size = args.batch_size
+    balanced = args.balanced_training
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Running on {device}...")
+
+    input_size = x_train_unsupervised.shape[1]
+    output_size = 1
+    random_noise = True
+    mean = 0.0
+    std = 0.1
+    k = 2
+    n_runs = args.n_runs
+
+    # Load pre-trained ARN
+    name_VAE_model = f'ARN_Generator_{attack_type}_0.ckpt'
+    name_MC_model = f'ARN_Discriminator_{attack_type}_0.ckpt'
+
+    path_VAE_model = os.path.join(args.SAVE_FOLDER, 'models', name_VAE_model)
+    path_MC_model = os.path.join(args.SAVE_FOLDER, 'models', name_MC_model)
+
+    MC_model = Discriminator(nc=input_size, nc_out=args.nc_out, nout=args.nout).to(device)
+    MC_model.load_state_dict(torch.load(path_MC_model))
+
+    if args.apply_normalization:
+        VAE_model = Generator(nf_in=input_size, nf_out=args.nf_out,
+                              z_dim=args.z_dim, out_activation=nn.ReLU).to(device)
+    else:
+        VAE_model = Generator(nf_in=input_size, nf_out=args.nf_out, z_dim=args.z_dim).to(device)
+
+    VAE_model.load_state_dict(torch.load(path_VAE_model))
+
+    CPVAE_model = ConcatenatedPredictiveVAE(MC_model, VAE_model, (args.z_dim + args.nc_out + input_size), output_size,
+                                            device, params=vars(args), balanced=balanced,
+                                            random_noise=random_noise, mean=mean, std=std)
+    CPVAE_optimizer = torch.optim.Adam(CPVAE_model.parameters(), lr=0.0001)
+    CPVAE_criterion = nn.BCEWithLogitsLoss()
+
+    our_model_folder = os.path.join(args.SAVE_FOLDER, 'our_models')
+    os.makedirs(our_model_folder, exist_ok=True)
+    last_model_path = os.path.join(args.SAVE_FOLDER, 'our_models',
+                                   f'last_our_models_{args.attack_type}_{args.n_exps}_{n_runs}.pt')
+    best_model_path = os.path.join(args.SAVE_FOLDER, 'our_models',
+                                   f'best_our_models_{args.attack_type}_{args.n_exps}_{n_runs}.pt')
+
+    print(f"Starting {attack_type} ConcatenatedPredictiveVAE model training...")
+    start = time.time()
+    # -----CPVAE model training-----#
+    CPVAE_model.fit(args.n_epochs_cpvae, CPVAE_optimizer, CPVAE_criterion, train_few_shot_loader, batch_size, balanced,
+                    k=k,
+                    best_model_path=best_model_path, last_model_path=last_model_path)
+    # -----CPVAE model training-----#
+    end = time.time()
+    training_time_min = (end - start) / 60
+    print("ConcatenatedPredictiveVAE done!")
+    print(f"Training time: {end - start:.2f} seconds")
+
+if __name__ == '__main__':
+    main()

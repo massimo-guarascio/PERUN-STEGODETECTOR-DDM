@@ -1,0 +1,140 @@
+import torch
+import torch.nn as nn
+
+
+class Generator(nn.Module):
+    def __init__(self, nf_in=121, nf_out=32, z_dim=16, out_activation=None):
+        super(Generator, self).__init__()
+
+        self.nf_in = nf_in
+        self.nf_out = nf_out
+        self.z_dim = z_dim
+        self.out_activation = out_activation
+
+        self.encoder = nn.Sequential(
+            nn.Linear(self.nf_in, self.nf_out),
+            nn.BatchNorm1d(self.nf_out),
+            nn.ReLU(0.2),
+        )
+
+        self.decoder = nn.Sequential(
+
+            nn.Linear(self.nf_out, self.nf_in)
+        )
+
+        self.fc1 = nn.Linear(self.nf_out, self.nf_out)
+        self.fc21 = nn.Linear(self.nf_out, self.z_dim)
+        self.fc22 = nn.Linear(self.nf_out, self.z_dim)
+
+        self.fc3 = nn.Linear(self.z_dim, self.nf_out)
+        self.fc4 = nn.Linear(self.nf_out, self.nf_out)
+
+        self.relu = nn.ReLU()
+        self.sigmoid = nn.Sigmoid()
+
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def reparameterize(self, mu, logvar):
+        std = logvar.mul(0.5).exp_()
+        eps = torch.randn_like(std)
+        z = mu + std * eps
+        return z
+
+    def bottleneck(self, h):
+        mu, logvar = self.fc21(h), self.fc22(h)
+        z = self.reparameterize(mu, logvar)
+        return z, mu, logvar
+
+    def encode(self, x):
+        conv = self.encoder(x)
+        h = self.fc1(conv)
+
+        z, mu, logvar = self.bottleneck(h)
+        return z, mu, logvar
+
+    def decode(self, z):
+        h = self.relu(self.fc3(z))
+        deconv_input = self.fc4(h)
+
+        return self.decoder(deconv_input)
+
+    def forward(self, x):
+        z, mu, logvar = self.encode(x)
+        logits = self.decode(z)
+
+        if self.out_activation is not None:
+            sampled_data = self.out_activation(logits)
+            return logits, mu, logvar, sampled_data
+
+        return logits, mu, logvar, logits
+
+
+class Discriminator(nn.Module):
+
+    def __init__(self, nc=121, nc_out=16, nout=128):
+        super(Discriminator, self).__init__()
+
+        self.nc = nc
+        self.nc_out = nc_out
+        self.nout = nout
+
+        self.feature_extractor = nn.Sequential(
+
+            nn.Linear(self.nc, self.nout),
+            nn.BatchNorm1d(self.nout),
+            nn.ReLU(),
+
+            nn.Linear(self.nout, self.nout),
+            nn.BatchNorm1d(self.nout),
+            nn.ReLU(),
+
+        )
+
+        self.fc1 = nn.Sequential(
+
+            nn.Linear(self.nout, self.nout),
+            nn.BatchNorm1d(self.nout),
+            nn.Dropout(0.05),
+            nn.ReLU(),
+
+            nn.Linear(self.nout, self.nc_out),
+            nn.BatchNorm1d(self.nc_out),
+            nn.Dropout(0.05),
+            nn.ReLU(),
+        )
+
+        self.fc2 = nn.Sequential(
+            nn.Linear(self.nc_out, 1),
+            nn.Sigmoid()
+        )
+
+        self.init_weights()
+
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.feature_extractor(x)
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return x.flatten()
+
+    def encode(self, x):
+        x = self.feature_extractor(x)
+        x = self.fc1(x)
+        return x
